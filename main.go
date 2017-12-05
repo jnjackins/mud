@@ -66,17 +66,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// load config once synchronously, then start async workero
 	config := new(config)
-	fi, err := os.Stat(*configPath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	mtime := fi.ModTime()
-	if err := config.reload(); err != nil {
-		log.Fatal(err)
-	}
+
 	if *configPath != "" {
+		// load config once synchronously, then start async worker
+		fi, err := os.Stat(*configPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		mtime := fi.ModTime()
+		if err := config.reload(); err != nil {
+			log.Fatal(err)
+		}
 		go func() {
 			for range time.Tick(5 * time.Second) {
 				fi, err := os.Stat(*configPath)
@@ -145,7 +146,7 @@ func read(conn *telnet.Conn, config *config, tick chan<- time.Time) error {
 			buf[n] = '\n'
 			n++
 
-			// hack: force the prompt to refresh
+			// force the prompt to refresh
 			syscall.Kill(0, syscall.SIGWINCH)
 		}
 		if _, err := os.Stdout.Write(buf[:n]); err != nil {
@@ -174,6 +175,7 @@ func read(conn *telnet.Conn, config *config, tick chan<- time.Time) error {
 		for _, s := range config.Tick.Match {
 			if bytes.Contains(buf[:n], []byte(s)) {
 				tick <- time.Now()
+				break
 			}
 		}
 		config.RUnlock()
@@ -245,10 +247,14 @@ func tick(conn *telnet.Conn, config *config, tick <-chan time.Time) {
 	var lastTick time.Time
 	for t := range tick {
 		if *debug && !lastTick.IsZero() {
-			fmt.Printf("%v since last tick", t.Sub(lastTick))
+			fmt.Printf("%v since last tick\n", t.Sub(lastTick))
 		}
 		time.AfterFunc(config.Tick.Duration-10*time.Second, func() {
 			color.HiMagenta("10s until next tick.")
+			fmt.Println()
+
+			// force the prompt to refresh
+			syscall.Kill(0, syscall.SIGWINCH)
 		})
 		lastTick = t
 	}
