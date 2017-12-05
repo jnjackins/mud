@@ -251,7 +251,6 @@ func tick(conn *telnet.Conn, config *config, tick <-chan time.Time) {
 		}
 		time.AfterFunc(config.Tick.Duration-10*time.Second, func() {
 			color.HiMagenta("10s until next tick.")
-			fmt.Println()
 
 			// force the prompt to refresh
 			syscall.Kill(0, syscall.SIGWINCH)
