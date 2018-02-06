@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fatih/color"
 	"github.com/peterh/liner"
 	yaml "gopkg.in/yaml.v2"
 
@@ -22,6 +21,7 @@ import (
 
 var (
 	configPath = flag.String("config", "", "Path to yaml file defining triggers and macros")
+	scriptDir  = flag.String("pipe", "/tmp/mud", "Path to named script input and output pipes")
 	debug      = flag.Bool("debug", false, "Print debug information")
 )
 
@@ -42,12 +42,15 @@ func (c *config) reload() error {
 		return err
 	}
 
+	c.Lock()
+	defer c.Unlock()
+
+	c.Macros = nil
+	c.Triggers = nil
+
 	if err := yaml.Unmarshal(buf, c); err != nil {
 		return err
 	}
-
-	c.Lock()
-	defer c.Unlock()
 
 	return nil
 }
@@ -104,22 +107,36 @@ func main() {
 	}
 	defer conn.Close()
 
+	// provide in and out pipes for scripting
+	var pipeWriter io.Writer
+	if *scriptDir != "" {
+		var err error
+		pipeWriter, err = scriptWorker(conn, config, *scriptDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	errors := make(chan error)
 
 	tickCh := make(chan time.Time)
 
+	// MUD response reader
 	go func() {
-		errors <- read(conn, config, tickCh)
+		outputs := []io.Writer{os.Stdout, pipeWriter}
+		errors <- read(conn, outputs, config, tickCh)
 	}()
 
+	// primary input worker
 	prompt := liner.NewLiner()
-
 	go func() {
 		errors <- write(conn, config, prompt)
 	}()
 
+	// tick worker
 	go tick(conn, config, tickCh)
 
+	// login automatically, if possible
 	login(conn, config)
 
 	err = <-errors
@@ -131,7 +148,7 @@ func main() {
 	}
 }
 
-func read(conn *telnet.Conn, config *config, tick chan<- time.Time) error {
+func read(conn *telnet.Conn, outputs []io.Writer, config *config, tick chan<- time.Time) error {
 	buf := make([]byte, 1024)
 	for {
 		n, err := conn.Read(buf)
@@ -149,8 +166,12 @@ func read(conn *telnet.Conn, config *config, tick chan<- time.Time) error {
 			// force the prompt to refresh
 			syscall.Kill(0, syscall.SIGWINCH)
 		}
-		if _, err := os.Stdout.Write(buf[:n]); err != nil {
-			return err
+
+		// write to all outputs
+		for _, w := range outputs {
+			if _, err := w.Write(buf[:n]); err != nil {
+				return err
+			}
 		}
 
 		// execute triggers
@@ -197,6 +218,14 @@ func write(conn *telnet.Conn, config *config, prompt *liner.State) error {
 		} else if err != nil {
 			return err
 		}
+
+		// first, check if it's a client command
+		if f, ok := commands[s]; ok {
+			f()
+			conn.Write([]byte("\n"))
+			continue
+		}
+
 		if len(s) > 3 {
 			prompt.AppendHistory(s)
 		}
@@ -240,21 +269,5 @@ func login(conn *telnet.Conn, config *config) {
 	}
 	if v, ok := config.Login["pass"]; ok {
 		conn.Write([]byte(v + "\n"))
-	}
-}
-
-func tick(conn *telnet.Conn, config *config, tick <-chan time.Time) {
-	var lastTick time.Time
-	for t := range tick {
-		if *debug && !lastTick.IsZero() {
-			fmt.Printf("%v since last tick\n", t.Sub(lastTick))
-		}
-		time.AfterFunc(config.Tick.Duration-10*time.Second, func() {
-			color.HiMagenta("10s until next tick.")
-
-			// force the prompt to refresh
-			syscall.Kill(0, syscall.SIGWINCH)
-		})
-		lastTick = t
 	}
 }
