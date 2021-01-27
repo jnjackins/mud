@@ -21,8 +21,7 @@ func scriptWorker(conn *telnet.Conn, config *config, dir string) (io.Writer, err
 	if err := syscall.Mkfifo(in, 0600); err != nil {
 		return nil, err
 	}
-	log.Printf("opening input file for reading")
-	inp, err := os.OpenFile(in, os.O_RDWR, os.ModeNamedPipe)
+	inp, err := os.OpenFile(in, os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
@@ -32,30 +31,33 @@ func scriptWorker(conn *telnet.Conn, config *config, dir string) (io.Writer, err
 	if err := syscall.Mkfifo(out, 0600); err != nil {
 		return nil, err
 	}
-	log.Printf("opening output file for writing")
-	outp, err := os.OpenFile(out, os.O_RDWR, os.ModeNamedPipe)
+
+	// need to open this in nonblocking mode, so we don't deadlock
+	// if the pipe isn't being read
+	fd, err := syscall.Open(out, syscall.O_RDWR|syscall.O_NONBLOCK, 0600)
 	if err != nil {
 		return nil, err
 	}
+	outp := os.NewFile(uintptr(fd), out)
 
+	// read input
 	go func() {
-		for range time.Tick(1 * time.Second) {
-			scanner := bufio.NewScanner(inp)
-			for scanner.Scan() {
-				s := scanner.Text()
-				log.Println(s)
-				for _, sub := range expand(s, config) {
-					if _, err := conn.Write([]byte(sub + "\n")); err != nil {
-						log.Println(err)
-					}
-					dur := 1*time.Second + time.Duration(rand.Intn(500))*time.Millisecond
-					time.Sleep(dur)
+		scanner := bufio.NewScanner(inp)
+		for scanner.Scan() {
+			s := scanner.Text()
+			log.Println(s)
+			for _, sub := range expand(s, config) {
+				if _, err := conn.Write([]byte(sub + "\n")); err != nil {
+					log.Println(err)
 				}
-			}
-			if err := scanner.Err(); err != nil {
-				log.Println(err)
+				dur := 1*time.Second + time.Duration(rand.Intn(500))*time.Millisecond
+				time.Sleep(dur)
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			log.Println(err)
+		}
 	}()
+
 	return outp, nil
 }

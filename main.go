@@ -169,9 +169,7 @@ func read(conn *telnet.Conn, outputs []io.Writer, config *config, tick chan<- ti
 
 		// write to all outputs
 		for _, w := range outputs {
-			if _, err := w.Write(buf[:n]); err != nil {
-				return err
-			}
+			w.Write(buf[:n])
 		}
 
 		// execute triggers
