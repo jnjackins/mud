@@ -1,42 +1,84 @@
-package main
+package mud
 
 import (
 	"fmt"
-	"syscall"
+	"strings"
 	"time"
-
-	"github.com/fatih/color"
-	"github.com/jnjackins/mud/telnet"
 )
 
-var commands = map[string]func(){
-	"/t": nextTick,
+var commands = map[string]func(*Session, ...string){
+	"/set":              set,
+	"/vars":             vars,
+	"/tick":             tick,
+	"/wait":             wait,
+	"/disable-triggers": disableTriggers,
+	"/enable-triggers":  enableTriggers,
 }
 
-var lastTick time.Time
+func set(c *Session, args ...string) {
+	c.Lock()
+	defer c.Unlock()
 
-func tick(conn *telnet.Conn, config *config, tick <-chan time.Time) {
-	for t := range tick {
-		if *debug && !lastTick.IsZero() {
-			fmt.Printf("%v since last tick\n", t.Sub(lastTick))
+	for _, arg := range args {
+		parts := strings.Split(arg, "=")
+		if len(parts) != 2 {
+			continue
 		}
-		time.AfterFunc(config.Tick.Duration-10*time.Second, func() {
-			color.HiMagenta("10s until next tick.")
-
-			// force the prompt to refresh
-			syscall.Kill(0, syscall.SIGWINCH)
-		})
-		lastTick = t
+		c.vars.Lock()
+		c.vars.m[parts[0]] = parts[1]
+		c.vars.Unlock()
 	}
 }
 
-func nextTick() {
-	if lastTick.IsZero() {
-		color.HiMagenta("no tick info")
+func vars(c *Session, args ...string) {
+	c.Lock()
+	defer c.Unlock()
+
+	c.vars.Lock()
+	for name, val := range c.vars.m {
+		fmt.Fprintf(c.output, "%s=%s\n", name, val)
+	}
+	c.vars.Unlock()
+}
+
+func tick(c *Session, args ...string) {
+	c.RLock()
+	defer c.RUnlock()
+
+	if c.lastTick.IsZero() {
+		info.Fprintln(c.output, "no tick info")
 		return
 	}
 	var next time.Time
-	for next = lastTick; next.Before(time.Now()); next = next.Add(time.Minute) {
+	for next = c.lastTick; next.Before(time.Now()); next = next.Add(c.cfg.Tick.Duration) {
 	}
-	color.HiMagenta("next tick in %ds", int(next.Sub(time.Now()).Seconds()))
+	info.Fprintf(c.output, "next tick in %ds\n", int(next.Sub(time.Now()).Seconds()))
+}
+
+func wait(c *Session, args ...string) {
+	if len(args) == 0 {
+		return
+	}
+	d, err := time.ParseDuration(args[0])
+	if err != nil {
+		return
+	}
+
+	// no way to interrupt, so max out at 5 seconds
+	if d > 5*time.Second {
+		d = 5 * time.Second
+	}
+	time.Sleep(d)
+}
+
+func disableTriggers(c *Session, args ...string) {
+	c.Lock()
+	c.triggersDisabled = true
+	c.Unlock()
+}
+
+func enableTriggers(c *Session, args ...string) {
+	c.Lock()
+	c.triggersDisabled = false
+	c.Unlock()
 }

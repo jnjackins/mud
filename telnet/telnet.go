@@ -120,7 +120,6 @@ func newTelnetProcessor() *tnProcessor {
 	return processor
 }
 
-// We're an io.Reader
 func (p *tnProcessor) Read(b []byte) (int, error) {
 	max := len(b)
 	n := 0
@@ -158,12 +157,11 @@ func (p *tnProcessor) capSubData(d byte, b byte) {
 
 func (p *tnProcessor) doHandlers(bs []byte) {
 	for i, h := range p.conn.handlers {
-		// A new copy of the slice. Gotta be safe.
 		m := make([]byte, len(bs))
 		copy(m, bs)
 		err := h.send(m)
 		if err != nil {
-			go func() { // Using a mutex, so safe to launch these off
+			go func() {
 				p.conn.handlerMutex.Lock()
 				defer p.conn.handlerMutex.Unlock()
 				p.conn.handlers = append(p.conn.handlers[:i], p.conn.handlers[i+1:]...)
@@ -198,6 +196,9 @@ func (p *tnProcessor) processByte(b byte) {
 		} else {
 			p.state = inDefault
 		}
+		if bs == GA {
+			p.dontCap('\n')
+		}
 		p.capture(b)
 
 		if p.state == inDefault { // This means a command is over!
@@ -224,7 +225,7 @@ func (p *tnProcessor) processByte(b byte) {
 			p.capSubData(p.currentSub, b)
 		} else {
 			p.subDataFinished(p.currentSub)
-			//p.currentSub = byte(NUL)
+			// p.currentSub = byte(NUL)
 			p.state = inDefault
 			p.processByte(byte(IAC))
 			p.processByte(b)
