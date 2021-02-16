@@ -1,7 +1,6 @@
 package mud
 
-// TODO: var substitution
-// TODO: regexp substitutions
+// TODO: multi-input without tell
 
 import (
 	"bufio"
@@ -14,7 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/buildkite/interpolate"
+	"github.com/jnjackins/mud/internal/interpolate"
+
 	"github.com/fatih/color"
 )
 
@@ -27,21 +27,20 @@ type Session struct {
 
 	sync.RWMutex
 	cfg              Config
+	vars             mapvars
+	lastTick         time.Time
 	triggersDisabled bool
-
-	cancelTimers context.CancelFunc
-	lastTick     time.Time
-	vars         *mapvars
+	cancelTimers     context.CancelFunc
 }
 
-type mapvars struct {
-	sync.Mutex
-	m map[string]string
-}
+type mapvars map[string]string
 
-func (m *mapvars) Get(key string) (string, bool) {
-	v, ok := m.m[key]
-	return v, ok
+func (m mapvars) Get(key string) (string, bool) {
+	v, ok := m[key]
+	if !ok {
+		v = "$" + key
+	}
+	return v, true
 }
 
 var (
@@ -49,15 +48,15 @@ var (
 	info      = color.New(color.FgBlue)
 )
 
-func New(conn net.Conn, input io.Reader, output, log io.Writer) *Session {
+func New(cfg Config, conn net.Conn, input io.Reader, output, log io.Writer) *Session {
 	s := &Session{
 		conn:   conn,
 		input:  input,
 		output: output,
 		log:    log,
-		vars: &mapvars{
-			m: make(map[string]string),
-		},
+
+		cfg:  cfg,
+		vars: make(mapvars),
 	}
 
 	errors := make(chan error)
@@ -73,7 +72,7 @@ func New(conn net.Conn, input io.Reader, output, log io.Writer) *Session {
 
 	go s.notifyTicks(tickCh)
 
-	go s.Login()
+	s.Login()
 
 	return s
 }
@@ -83,6 +82,7 @@ func (c *Session) receive(tick chan<- time.Time) error {
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
+		c.RLock()
 		if c.isLog(line) {
 			ts := time.Now().Format(time.Kitchen)
 			fmt.Fprintf(c.log, "%s %s\n", ts, string(line))
@@ -96,10 +96,12 @@ func (c *Session) receive(tick chan<- time.Time) error {
 		c.triggers(line)
 
 		// tick timer
-		c.RLock()
 		for _, s := range c.cfg.Tick.Match {
 			if bytes.Contains(line, []byte(s)) {
-				tick <- time.Now()
+				// can't synchronously write to channel while holding lock
+				go func() {
+					tick <- time.Now()
+				}()
 				break
 			}
 		}
@@ -109,13 +111,9 @@ func (c *Session) receive(tick chan<- time.Time) error {
 }
 
 func (c *Session) triggers(line []byte) {
-	c.RLock()
-	defer c.RUnlock()
-
 	if c.triggersDisabled {
 		return
 	}
-	var wait time.Duration
 	for pattern := range c.cfg.Triggers {
 		if pattern.match(line) {
 			// expand regexp capture groups
@@ -125,17 +123,10 @@ func (c *Session) triggers(line []byte) {
 			info.Fprintf(c.output, "[trigger: %s]\n", s)
 
 			// expand aliases
-			c.vars.Lock()
 			for _, sub := range c.expand(s) {
-				sub, _ := interpolate.Interpolate(c.vars, sub)
-				go func(s string, wait time.Duration) {
-					time.Sleep(wait)
-					fmt.Fprintf(c.conn, "%s\n", s)
-				}(sub, wait)
-				wait += 100 * time.Millisecond
+				fmt.Fprintf(c.output, "%s\n", sub)
+				fmt.Fprintf(c.conn, "%s\n", sub)
 			}
-			c.vars.Unlock()
-
 		}
 	}
 }
@@ -178,16 +169,14 @@ func (c *Session) send() error {
 	for scanner.Scan() {
 		s := scanner.Text()
 
-		for _, sub := range c.expand(s) {
-			c.vars.Lock()
-			sub, _ := interpolate.Interpolate(c.vars, sub)
-			c.vars.Unlock()
-
+		c.RLock()
+		expanded := c.expand(s)
+		c.RUnlock()
+		for _, sub := range expanded {
 			// check for command
 			if len(sub) > 0 && sub[0] == '/' {
 				fields := strings.Fields(sub)
 				if f, ok := commands[fields[0]]; ok {
-					fmt.Fprintln(c.output, s)
 					f(c, fields[1:]...)
 					c.conn.Write([]byte("\n")) // get a fresh prompt
 					continue
@@ -204,16 +193,25 @@ func (c *Session) expand(s string) []string {
 	var out []string
 	for _, sub := range strings.Split(s, ";") {
 		sub := strings.TrimSpace(sub)
+		if len(sub) == 0 {
+			out = append(out, "")
+			continue
+		}
 
 		// replace aliases
 		words := strings.Fields(sub)
-		if len(words) > 0 {
-			c.RLock()
-			if v, ok := c.cfg.Aliases[words[0]]; ok {
-				info.Fprintf(c.output, "[alias: %s]\n", v)
-				sub = v + " " + strings.Join(words[1:], " ")
-			}
-			c.RUnlock()
+		if v, ok := c.cfg.Aliases[words[0]]; ok {
+			info.Fprintf(c.output, "[alias: %s]\n", v)
+			sub = v
+		}
+
+		// interpolate $vars in the command. $1, $*, are expanded as positional
+		// parameters (useful for aliases) and other variables are expanded with
+		// their configured values.
+		var err error
+		sub, err = interpolate.Interpolate(c.vars, words, sub)
+		if err != nil {
+			info.Fprintf(c.output, "[ERROR: %v]\n", err)
 		}
 
 		if strings.Contains(sub, ";") {
@@ -227,19 +225,17 @@ func (c *Session) expand(s string) []string {
 
 func (c *Session) notifyTicks(tick <-chan time.Time) {
 	for t := range tick {
-		time.AfterFunc(c.cfg.Tick.Duration-10*time.Second, func() {
+		c.Lock()
+		dur := c.cfg.Tick.Duration
+		time.AfterFunc(dur-10*time.Second, func() {
 			highlight.Fprintln(c.output, "10s until next tick.")
 		})
-		c.Lock()
 		c.lastTick = t
 		c.Unlock()
 	}
 }
 
 func (c *Session) Login() {
-	c.RLock()
-	defer c.RUnlock()
-
 	if c.cfg.Login.Name != "" {
 		fmt.Fprintln(c.conn, c.cfg.Login.Name)
 	}

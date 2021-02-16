@@ -16,29 +16,23 @@ var commands = map[string]func(*Session, ...string){
 }
 
 func set(c *Session, args ...string) {
-	c.Lock()
-	defer c.Unlock()
-
 	for _, arg := range args {
 		parts := strings.Split(arg, "=")
 		if len(parts) != 2 {
 			continue
 		}
-		c.vars.Lock()
-		c.vars.m[parts[0]] = parts[1]
-		c.vars.Unlock()
+		c.Lock()
+		c.vars[parts[0]] = parts[1]
+		c.Unlock()
 	}
 }
 
 func vars(c *Session, args ...string) {
-	c.Lock()
-	defer c.Unlock()
-
-	c.vars.Lock()
-	for name, val := range c.vars.m {
+	c.RLock()
+	for name, val := range c.vars {
 		fmt.Fprintf(c.output, "%s=%s\n", name, val)
 	}
-	c.vars.Unlock()
+	c.RUnlock()
 }
 
 func tick(c *Session, args ...string) {

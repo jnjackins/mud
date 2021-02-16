@@ -48,11 +48,9 @@ func (c *Session) SetConfig(cfg Config) {
 
 	c.cfg = cfg
 
-	c.vars.Lock()
 	for k, v := range cfg.Vars {
-		c.vars.m[k] = v
+		c.vars[k] = v
 	}
-	c.vars.Unlock()
 
 	if c.cancelTimers != nil {
 		c.cancelTimers()
