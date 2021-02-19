@@ -49,7 +49,9 @@ func (c *Session) SetConfig(cfg Config) {
 	c.cfg = cfg
 
 	for k, v := range cfg.Vars {
-		c.vars[k] = v
+		if _, exists := c.vars[k]; !exists {
+			c.vars[k] = v
+		}
 	}
 
 	if c.cancelTimers != nil {
