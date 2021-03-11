@@ -1,4 +1,4 @@
-package mud
+package main
 
 // TODO: multi-input without tell
 
@@ -13,24 +13,34 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fvbock/trie"
 	"github.com/jnjackins/mud/internal/interpolate"
 
 	"github.com/fatih/color"
 )
 
-type Session struct {
-	conn  net.Conn
-	input io.Reader
+var (
+	highlight = color.New(color.FgHiMagenta)
+	info      = color.New(color.FgBlue)
+)
 
-	output io.Writer
-	log    io.Writer
+type pipe struct {
+	r io.ReadCloser
+	w io.WriteCloser
+}
 
-	sync.RWMutex
-	cfg              Config
-	vars             mapvars
-	lastTick         time.Time
-	triggersDisabled bool
-	cancelTimers     context.CancelFunc
+func (p pipe) Close() error {
+	p.r.Close()
+	p.w.Close()
+	return nil
+}
+
+func (p pipe) Read(b []byte) (int, error) {
+	return p.r.Read(b)
+}
+
+func (p pipe) Write(b []byte) (int, error) {
+	return p.w.Write(b)
 }
 
 type mapvars map[string]string
@@ -43,24 +53,38 @@ func (m mapvars) Get(key string) (string, bool) {
 	return v, true
 }
 
-var (
-	highlight = color.New(color.FgHiMagenta)
-	info      = color.New(color.FgBlue)
-)
+type Session struct {
+	prefix string
+	path   string
 
-func New(cfg Config, conn net.Conn, input io.Reader, output, log io.Writer) *Session {
-	s := &Session{
-		conn:   conn,
-		input:  input,
-		output: output,
-		log:    log,
+	conn   net.Conn
+	input  pipe
+	output pipe
+	logf   io.WriteCloser
 
-		cfg:  cfg,
-		vars: make(mapvars),
-	}
+	sync.RWMutex
+	cfg              Config
+	vars             mapvars
+	history          []string
+	lastTick         time.Time
+	triggersDisabled bool
+	cancelTimers     context.CancelFunc
 
-	errors := make(chan error)
+	// tab completion
+	words       *trie.Trie
+	expireQueue chan string
+}
+
+func (s *Session) Close() error {
+	s.input.Close()
+	s.output.Close()
+	s.logf.Close()
+	return nil
+}
+
+func (s *Session) Start() error {
 	tickCh := make(chan time.Time)
+	errors := make(chan error)
 
 	go func() {
 		errors <- s.receive(tickCh)
@@ -72,9 +96,13 @@ func New(cfg Config, conn net.Conn, input io.Reader, output, log io.Writer) *Ses
 
 	go s.notifyTicks(tickCh)
 
-	s.Login()
+	go func() {
+		if err := s.Login(); err != nil {
+			errors <- err
+		}
+	}()
 
-	return s
+	return <-errors
 }
 
 func (c *Session) receive(tick chan<- time.Time) error {
@@ -85,10 +113,10 @@ func (c *Session) receive(tick chan<- time.Time) error {
 		c.RLock()
 		if c.isLog(line) {
 			ts := time.Now().Format(time.Kitchen)
-			fmt.Fprintf(c.log, "%s %s\n", ts, string(line))
+			fmt.Fprintf(c.logf, "%s %s\n", ts, string(line))
 		}
-		if c.isHighlight(line) {
-			highlight.Fprintln(c.output, string(line))
+		if s, ok := c.highlight(line); ok {
+			highlight.Fprintln(c.output, s)
 		} else {
 			fmt.Fprintln(c.output, string(line))
 		}
@@ -118,7 +146,7 @@ func (c *Session) triggers(line []byte) {
 		if pattern.match(line) {
 			// expand regexp capture groups
 			template := c.cfg.Triggers[pattern]
-			s := pattern.expand(string(line), template)
+			s := pattern.expand(line, template)
 
 			info.Fprintf(c.output, "[trigger: %s]\n", s)
 
@@ -140,13 +168,13 @@ func (c *Session) isLog(line []byte) bool {
 	return false
 }
 
-func (c *Session) isHighlight(line []byte) bool {
-	for _, re := range c.cfg.Highlight {
-		if re.match(line) {
-			return true
+func (c *Session) highlight(line []byte) (string, bool) {
+	for _, pattern := range c.cfg.Highlight {
+		if pattern.match(line) {
+			return highlight.Sprint(string(line)), true
 		}
 	}
-	return false
+	return "", false
 }
 
 func (c *Session) isPrompt(line []byte) bool {
@@ -183,10 +211,17 @@ func (c *Session) send() error {
 				}
 			}
 
+			c.history = append(c.history, sub)
+			if len(c.history) > 100 {
+				c.history = c.history[1:]
+			}
 			fmt.Fprintln(out, sub)
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan input: %v", err)
+	}
+	return nil
 }
 
 func (c *Session) expand(s string) []string {
@@ -235,11 +270,16 @@ func (c *Session) notifyTicks(tick <-chan time.Time) {
 	}
 }
 
-func (c *Session) Login() {
+func (c *Session) Login() error {
 	if c.cfg.Login.Name != "" {
-		fmt.Fprintln(c.conn, c.cfg.Login.Name)
+		if _, err := fmt.Fprintln(c.conn, c.cfg.Login.Name); err != nil {
+			return err
+		}
 	}
 	if c.cfg.Login.Password != "" {
-		fmt.Fprintln(c.conn, c.cfg.Login.Password)
+		if _, err := fmt.Fprintln(c.conn, c.cfg.Login.Password); err != nil {
+			return err
+		}
 	}
+	return nil
 }

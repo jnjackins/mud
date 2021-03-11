@@ -1,4 +1,4 @@
-package mud
+package main
 
 import (
 	"fmt"
@@ -9,10 +9,13 @@ import (
 var commands = map[string]func(*Session, ...string){
 	"/set":              set,
 	"/vars":             vars,
+	"/aliases":          aliases,
 	"/tick":             tick,
 	"/wait":             wait,
 	"/disable-triggers": disableTriggers,
 	"/enable-triggers":  enableTriggers,
+	"/history":          history,
+	"/clear-history":    clearHistory,
 }
 
 func set(c *Session, args ...string) {
@@ -24,12 +27,21 @@ func set(c *Session, args ...string) {
 		c.Lock()
 		c.vars[parts[0]] = parts[1]
 		c.Unlock()
+		fmt.Fprintf(c.output, "%s=%s\n", parts[0], parts[1])
 	}
 }
 
 func vars(c *Session, args ...string) {
 	c.RLock()
 	for name, val := range c.vars {
+		fmt.Fprintf(c.output, "%s=%s\n", name, val)
+	}
+	c.RUnlock()
+}
+
+func aliases(c *Session, args ...string) {
+	c.RLock()
+	for name, val := range c.cfg.Aliases {
 		fmt.Fprintf(c.output, "%s=%s\n", name, val)
 	}
 	c.RUnlock()
@@ -75,4 +87,12 @@ func enableTriggers(c *Session, args ...string) {
 	c.Lock()
 	c.triggersDisabled = false
 	c.Unlock()
+}
+
+func history(c *Session, args ...string) {
+	fmt.Println(strings.Join(c.history, "; "))
+}
+
+func clearHistory(c *Session, args ...string) {
+	c.history = []string{}
 }

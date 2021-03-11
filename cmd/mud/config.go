@@ -1,4 +1,4 @@
-package mud
+package main
 
 import (
 	"io/ioutil"

@@ -1,4 +1,4 @@
-package mud
+package main
 
 import (
 	"regexp"
@@ -32,16 +32,16 @@ func (p pattern) match(s []byte) bool {
 	return re.Match(s)
 }
 
-func (p pattern) expand(content, template string) string {
+func (p pattern) expand(content []byte, template string) string {
 	patternLock.RLock()
 	re := patterns[p]
 	patternLock.RUnlock()
 
 	var result []byte
-	for _, submatches := range re.FindAllStringSubmatchIndex(content, -1) {
+	for _, submatches := range re.FindAllSubmatchIndex(content, -1) {
 		// Apply the captured submatches to the template and append the output
 		// to the result.
-		result = re.ExpandString(result, template, content, submatches)
+		result = re.Expand(result, []byte(template), content, submatches)
 	}
 	return string(result)
 }
