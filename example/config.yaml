@@ -1,0 +1,75 @@
+address: mud.arctic.org:2700
+
+login:
+  name: mrboffo
+  password: password123 # optional
+
+triggers:
+  pile of steel coins: take all.pile
+  There were (\d+) coins.: split $1
+  You are thirsty: drink all.water
+  You are hungry: eat all.food
+
+vars:
+  tank: mikal
+  pet: fido
+
+aliases:
+  # basic aliases. $1 means the first argument
+  mm: c 'magic missile' $1 # mm dog -> c 'magic missile' dog
+  sg: c 'shocking grasp' $1
+  fb: c 'fireball'
+  # etc.
+
+  # $* means all arguments
+  op: order $pet $* # e.g.: op mem 'magic missile' -> order fido mem 'magic missile'
+
+  # variables as defined in var section or set/overridden in-game
+  wa: watch $tank
+
+timers:
+  - every: 10m
+    do: cartwheel
+
+highlight:
+  "YOU": red
+  "disarms": red
+  "You stop focusing": purple
+  "raise a level": magenta
+  "gain a rank": magenta
+  "You feel enlightened": magenta
+  "You are sent sprawling": red
+  "Your studies complete, you close your spellbook with a smile": green
+  "T:[0-9] ": purple
+
+replace:
+  "The corrosive sheen shielding you disappears":
+    with: < VITRIOLIC SHIELD OFF >
+    color: yellow
+  # etc.
+
+gag:
+  - '[A-Z].* gives .* an order\.'
+  - '.* aims a magic missile at .*\.'
+  - '.* grins as (his|her|its) force missile crashes into .*\.'
+  - 'You watch with selfpride as the magic missile hits .*\.'
+
+log:
+  chat.log:
+    timestamp: true
+    match:
+      '[A-Z][a-zA-Z\-'' ]* says ''.*''': $0
+      '[A-Z][a-zA-Z\-'' ]* tells you ''.*''': $0
+      '[A-Z][a-zA-Z\-'' ]* tells your [a-z]+ ''.*''': $0
+      '[A-Z][a-zA-Z\-'' ]* shouts ''.*''': $0
+      'You tell [a-zA-Z\-'' ]* ''.*''': $0
+      'You say ''.*''': $0
+      'You shout ''.*''': $0
+      'Your clanmate .* has entered the game.': $0
+      'You raise a level': $0
+      'You gain a rank': $0
+      '[A-Z][a-zA-Z\-'' ]* decays in your hands': $0
+      '[A-Z][a-zA-Z\-'' ]* decayed while you were sleeping': $0
+      '[A-Z][a-zA-Z\-'' ]* is destroyed.': $0
+      '[A-Z][a-zA-Z\-'' ]* disarms you': $0
+
