@@ -59,7 +59,7 @@ func (c *client) input() {
 			// attempt to order string commands between sessions by inserting a
 			// small delay
 			go func(n int, cmd string) {
-				time.Sleep(time.Duration(n) * 10 * time.Millisecond)
+				time.Sleep(time.Duration(n) * 5 * time.Millisecond)
 				if _, err := w.Write([]byte(cmd + "\n")); err != nil {
 					log.Println(err)
 				}

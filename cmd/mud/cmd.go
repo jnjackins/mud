@@ -2,11 +2,14 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 var commands = map[string]func(*Session, ...string){
+	"/dump":             dump,
 	"/set":              set,
 	"/vars":             vars,
 	"/aliases":          aliases,
@@ -16,6 +19,46 @@ var commands = map[string]func(*Session, ...string){
 	"/enable-triggers":  enableTriggers,
 	"/history":          history,
 	"/clear-history":    clearHistory,
+}
+
+func dump(c *Session, args ...string) {
+	if len(args) != 1 {
+		fmt.Fprintf(c.output, "dump: missing argument\n")
+		return
+	}
+	cfg := c.cfg.Dump[args[0]]
+	fmt.Fprintln(c.conn, cfg.Cmd)
+	fmt.Fprintf(c.output, "/dump %s\n", cfg.Cmd)
+
+	dumpc := make(chan []byte)
+
+	c.Lock()
+	c.dumpc = dumpc
+	c.Unlock()
+
+	f, err := os.Create(filepath.Join(c.path, cfg.Dest))
+	if err != nil {
+		fmt.Fprintf(c.output, "dump: %v\n", err)
+		return
+	}
+
+	go func() {
+		dumping := false
+		for line := range dumpc {
+			if cfg.Start.Match(line) {
+				dumping = true
+			}
+			if dumping {
+				fmt.Fprintln(f, string(line))
+			}
+			if cfg.End.Match(line) {
+				c.Lock()
+				c.dumpc = nil
+				c.Unlock()
+				return
+			}
+		}
+	}()
 }
 
 func set(c *Session, args ...string) {

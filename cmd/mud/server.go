@@ -4,6 +4,8 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"github.com/jnjackins/mud"
 )
 
 func (c *client) serve(sess *Session) error {
@@ -24,7 +26,7 @@ func (c *client) serve(sess *Session) error {
 				continue
 			}
 			if fi.ModTime().After(mtime) {
-				cfg, err := UnmarshalConfig(cfgPath)
+				cfg, err := mud.UnmarshalConfig(cfgPath)
 				if err != nil {
 					log.Println(err)
 					continue

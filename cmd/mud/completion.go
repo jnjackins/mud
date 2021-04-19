@@ -10,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/acarl005/stripansi"
 	"github.com/fvbock/trie"
 )
 
@@ -20,11 +21,9 @@ func (sess *Session) startCompleter() {
 	sess.expireQueue = make(chan string, 200)
 
 	go func() {
-		var err error
-		var r rune
 		var sb strings.Builder
 		for {
-			r, _, err = br.ReadRune()
+			line, err := br.ReadString('\n')
 			if err != nil {
 				if err == io.EOF {
 					time.Sleep(500 * time.Millisecond)
@@ -33,26 +32,32 @@ func (sess *Session) startCompleter() {
 				log.Printf("completer: %v", err)
 				break
 			}
-			if unicode.IsLetter(r) || r == '-' {
-				sb.WriteRune(r)
-			} else {
-				if sb.Len() > 3 {
-					word := strings.ToLower(sb.String())
-					sess.words.Add(word)
 
-					// queue of words added to the trie. When it's full, start
-					// deleting the oldest members of the queue from the trie.
-					select {
-					case sess.expireQueue <- word:
-					default:
-						// expireQueue is full
-						sess.Lock()
-						sess.words.Delete(<-sess.expireQueue)
-						sess.Unlock()
-						sess.expireQueue <- word
+			line = stripansi.Strip(line)
+			for len(line) > 0 {
+				r, n := utf8.DecodeRuneInString(line)
+				line = line[n:]
+
+				if unicode.IsLetter(r) || r == '-' {
+					sb.WriteRune(r)
+				} else {
+					if word := strings.ToLower(sb.String()); interesting(word) {
+						sess.words.Add(word)
+
+						// queue of words added to the trie. When it's full, start
+						// deleting the oldest members of the queue from the trie.
+						select {
+						case sess.expireQueue <- word:
+						default:
+							// expireQueue is full
+							sess.Lock()
+							sess.words.Delete(<-sess.expireQueue)
+							sess.Unlock()
+							sess.expireQueue <- word
+						}
 					}
+					sb.Reset()
 				}
-				sb.Reset()
 			}
 		}
 	}()
@@ -69,7 +74,7 @@ func (sess *Session) complete(line string, pos int) (head string, completions []
 	var nn int
 	for len(head) > 0 {
 		r, n := utf8.DecodeLastRuneInString(head)
-		if unicode.IsSpace(r) {
+		if !(unicode.IsLetter(r) || r == '-' || r == '_') {
 			completingArg = true
 			break
 		}

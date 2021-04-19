@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/jnjackins/mud"
 	"github.com/jnjackins/mud/telnet"
 )
 
@@ -59,12 +60,12 @@ func main() {
 }
 
 func (c *client) startSession(prefix, path string, serve bool) (*Session, error) {
-	cfg, err := UnmarshalConfig(path + "/config.yaml")
+	cfg, err := mud.UnmarshalConfig(path + "/config.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	input, output, logf, err := setupDir(path)
+	input, output, err := setupDir(path)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +83,6 @@ func (c *client) startSession(prefix, path string, serve bool) (*Session, error)
 		conn:   conn,
 		input:  input,
 		output: output,
-		logf:   logf,
 
 		vars: make(mapvars),
 	}
@@ -106,10 +106,9 @@ func (c *client) startSession(prefix, path string, serve bool) (*Session, error)
 	return sess, nil
 }
 
-func setupDir(path string) (input, output pipe, logf *os.File, err error) {
+func setupDir(path string) (input, output pipe, err error) {
 	inputPath := filepath.Join(path, "/in")
 	outputPath := filepath.Join(path, "/out")
-	logPath := filepath.Join(path, "/log")
 
 	os.Mkdir(path, 0777)
 
@@ -150,12 +149,6 @@ func setupDir(path string) (input, output pipe, logf *os.File, err error) {
 		return
 	}
 	output.r.(io.ReadSeeker).Seek(0, io.SeekEnd)
-
-	logf, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		err = fmt.Errorf("open log: %v", err)
-		return
-	}
 
 	return
 }

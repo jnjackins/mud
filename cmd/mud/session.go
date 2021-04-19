@@ -9,19 +9,23 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fvbock/trie"
+	"github.com/jnjackins/mud"
 	"github.com/jnjackins/mud/internal/interpolate"
 
 	"github.com/fatih/color"
 )
 
 var (
-	highlight = color.New(color.FgHiMagenta)
-	info      = color.New(color.FgBlue)
+	alert = color.New(color.FgHiMagenta)
+	info  = color.New(color.FgBlue)
 )
 
 type pipe struct {
@@ -60,15 +64,15 @@ type Session struct {
 	conn   net.Conn
 	input  pipe
 	output pipe
-	logf   io.WriteCloser
 
 	sync.RWMutex
-	cfg              Config
+	cfg              mud.Config
 	vars             mapvars
 	history          []string
 	lastTick         time.Time
 	triggersDisabled bool
 	cancelTimers     context.CancelFunc
+	dumpc            chan []byte
 
 	// tab completion
 	words       *trie.Trie
@@ -78,7 +82,6 @@ type Session struct {
 func (s *Session) Close() error {
 	s.input.Close()
 	s.output.Close()
-	s.logf.Close()
 	return nil
 }
 
@@ -107,17 +110,27 @@ func (s *Session) Start() error {
 
 func (c *Session) receive(tick chan<- time.Time) error {
 	scanner := bufio.NewScanner(c.conn)
+
+	logch, err := c.startLogWriter()
+	if err != nil {
+		return err
+	}
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		logch <- line
 
 		c.RLock()
-		if c.isLog(line) {
-			ts := time.Now().Format(time.Kitchen)
-			fmt.Fprintf(c.logf, "%s %s\n", ts, string(line))
+		if c.dumpc != nil {
+			c.dumpc <- line
 		}
-		if s, ok := c.highlight(line); ok {
-			highlight.Fprintln(c.output, s)
-		} else {
+
+		if s, ok := c.replace(line); ok {
+			line = s
+		} else if s, ok := c.highlight(line); ok {
+			line = s
+		}
+		if !c.gag(line) {
 			fmt.Fprintln(c.output, string(line))
 		}
 
@@ -138,15 +151,57 @@ func (c *Session) receive(tick chan<- time.Time) error {
 	return scanner.Err()
 }
 
+func (c *Session) startLogWriter() (chan []byte, error) {
+	files := make(map[string]*os.File)
+	c.RLock()
+	for filename := range c.cfg.Log {
+		path := filepath.Join(c.path, filename)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0666)
+		if err != nil {
+			return nil, err
+		}
+		files[filename] = f
+	}
+	c.RUnlock()
+
+	ch := make(chan []byte)
+
+	go func() {
+		for line := range ch {
+			c.RLock()
+			cfg := c.cfg.Log
+			for filename, v := range cfg {
+				for pattern, s := range v.Match {
+					if pattern.Match(line) {
+						tmpls := strings.Split(s, ";")
+						c.RUnlock()
+						for _, tmpl := range tmpls {
+							tmpl = strings.TrimSpace(tmpl)
+							f := files[filename]
+							if v.Timestamp {
+								fmt.Fprintf(f, "%s ", time.Now().Format(time.Kitchen))
+							}
+							fmt.Fprintln(f, pattern.Expand(line, tmpl))
+						}
+						c.RLock()
+					}
+				}
+			}
+			c.RUnlock()
+		}
+	}()
+	return ch, nil
+}
+
 func (c *Session) triggers(line []byte) {
 	if c.triggersDisabled {
 		return
 	}
 	for pattern := range c.cfg.Triggers {
-		if pattern.match(line) {
+		if pattern.Match(line) {
 			// expand regexp capture groups
 			template := c.cfg.Triggers[pattern]
-			s := pattern.expand(line, template)
+			s := pattern.Expand(line, template)
 
 			info.Fprintf(c.output, "[trigger: %s]\n", s)
 
@@ -159,29 +214,46 @@ func (c *Session) triggers(line []byte) {
 	}
 }
 
-func (c *Session) isLog(line []byte) bool {
-	for _, re := range c.cfg.Log {
-		if re.match(line) {
+func (c *Session) gag(line []byte) bool {
+	for _, pattern := range c.cfg.Gag {
+		if pattern.Match(line) {
 			return true
 		}
 	}
 	return false
 }
 
-func (c *Session) highlight(line []byte) (string, bool) {
-	for _, pattern := range c.cfg.Highlight {
-		if pattern.match(line) {
-			return highlight.Sprint(string(line)), true
+func (c *Session) replace(line []byte) ([]byte, bool) {
+	ok := false
+	for pattern, replace := range c.cfg.Replace {
+		if pattern.Match(line) {
+			ok = true
+			line = []byte(replace.Color.Sprint(replace.With))
 		}
 	}
-	return "", false
+	return line, ok
+}
+
+func (c *Session) highlight(line []byte) ([]byte, bool) {
+	if len(line) == 0 {
+		return line, false
+	}
+
+	ok := false
+	for pattern, color := range c.cfg.Highlight {
+		if pattern.Match(line) {
+			ok = true
+			line = pattern.Color(line, color)
+		}
+	}
+	return line, ok
 }
 
 func (c *Session) isPrompt(line []byte) bool {
 	if c.cfg.Prompt == "" {
 		return false
 	}
-	return c.cfg.Prompt.match(line)
+	return c.cfg.Prompt.Match(line)
 }
 
 func (c *Session) send() error {
@@ -197,23 +269,36 @@ func (c *Session) send() error {
 	for scanner.Scan() {
 		s := scanner.Text()
 
-		c.RLock()
-		expanded := c.expand(s)
-		c.RUnlock()
-		for _, sub := range expanded {
-			// check for command
-			if len(sub) > 0 && sub[0] == '/' {
-				fields := strings.Fields(sub)
+		if len(s) > 0 {
+			switch s[0] {
+			// shell command
+			case '!':
+				fmt.Fprintln(c.output, s)
+				c.sys(s[1:])
+				c.conn.Write([]byte("\n")) // get a fresh prompt
+				continue
+
+			// client command
+			case '/':
+				fields := strings.Fields(s)
 				if f, ok := commands[fields[0]]; ok {
+					fmt.Fprintln(c.output, s)
 					f(c, fields[1:]...)
 					c.conn.Write([]byte("\n")) // get a fresh prompt
 					continue
 				}
 			}
+		}
 
-			c.history = append(c.history, sub)
-			if len(c.history) > 100 {
-				c.history = c.history[1:]
+		c.RLock()
+		expanded := c.expand(s)
+		c.RUnlock()
+		for _, sub := range expanded {
+			if len(sub) > 0 {
+				c.history = append(c.history, sub)
+				if len(c.history) > 100 {
+					c.history = c.history[1:]
+				}
 			}
 			fmt.Fprintln(out, sub)
 		}
@@ -222,6 +307,19 @@ func (c *Session) send() error {
 		return fmt.Errorf("scan input: %v", err)
 	}
 	return nil
+}
+
+func (c *Session) sys(command string) {
+	args := strings.Fields(command)
+	if len(args) == 0 {
+		return
+	}
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Stdout = c.output
+	cmd.Stderr = c.output
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(c.output, err)
+	}
 }
 
 func (c *Session) expand(s string) []string {
@@ -263,7 +361,7 @@ func (c *Session) notifyTicks(tick <-chan time.Time) {
 		c.Lock()
 		dur := c.cfg.Tick.Duration
 		time.AfterFunc(dur-10*time.Second, func() {
-			highlight.Fprintln(c.output, "10s until next tick.")
+			alert.Fprintln(c.output, "10s until next tick.")
 		})
 		c.lastTick = t
 		c.Unlock()
