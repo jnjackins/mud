@@ -3,11 +3,12 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ type event struct {
 	status    status
 	charges   int
 	remaining time.Duration
+	kind      spellKind
 }
 
 type status uint
@@ -36,31 +38,29 @@ func watch(dir string) chan event {
 	events := make(chan event)
 
 	go func() {
-		f, err := os.Open(dir + "/status.log")
+		f, err := os.Open(filepath.Join(dir, "status.log"))
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer f.Close()
 		f.Seek(0, io.SeekEnd)
 
-		statusPattern := regexp.MustCompile("^([a-z ]+) (up|down|on|off|for [0-9]+[smh]+)$")
-		memPattern := regexp.MustCompile("^mem (.+)$")
-		castPattern := regexp.MustCompile("^cast (.+)$")
+		statusPattern := regexp.MustCompile(`^([a-z ]+) (up|down|on|off|for [0-9]+[smh]+)$`)
+		memPattern := regexp.MustCompile(`^mem (.+)$`)
+		spellPattern := regexp.MustCompile(`\[[0-9 ]+\][a-z ]+[a-z]`)
+
+		castPattern := regexp.MustCompile(`^cast (.+)$`)
 		scanner := bufio.NewScanner(tail.New(context.Background(), f, 100*time.Millisecond))
 		for scanner.Scan() {
 			if memPattern.Match(scanner.Bytes()) {
-				args := strings.Fields(scanner.Text())[1:]
-				for _, arg := range args {
-					parts := strings.Split(arg, ":")
-					if len(parts) != 2 {
+				for _, spell := range spellPattern.FindAllString(scanner.Text(), -1) {
+					name := spell[4:]
+					if _, ok := spellKinds[name]; !ok {
 						continue
 					}
-					spell := parts[0]
-					charges, err := strconv.Atoi(parts[1])
-					if err != nil {
-						continue
-					}
-					events <- event{name: spell, status: mem, charges: charges}
+					var charges int
+					fmt.Sscanf(spell, "[%2d]", &charges)
+					events <- event{name: name, status: mem, charges: charges}
 				}
 			} else if castPattern.Match(scanner.Bytes()) {
 				fields := strings.Fields(scanner.Text())

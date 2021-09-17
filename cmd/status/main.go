@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/marcusolsson/tui-go"
@@ -32,6 +33,12 @@ func main() {
 	th.SetStyle("label.status-warn", tui.Style{Bg: tui.ColorBlack, Fg: tui.ColorMagenta, Bold: tui.DecorationOn})
 	th.SetStyle("label.status-alarm", tui.Style{Bg: tui.ColorBlack, Fg: tui.ColorYellow, Bold: tui.DecorationOn})
 	th.SetStyle("label.status-off", tui.Style{Bg: tui.ColorBlack, Fg: tui.ColorRed, Bold: tui.DecorationOn})
+	th.SetStyle("label.spell-damage", tui.Style{Bg: tui.ColorBlack, Fg: tui.ColorRed, Bold: tui.DecorationOn})
+	th.SetStyle("label.spell-area", tui.Style{Bg: tui.ColorBlack, Fg: tui.ColorMagenta, Bold: tui.DecorationOn})
+	th.SetStyle("label.spell-buff", tui.Style{Bg: tui.ColorBlack, Fg: tui.ColorBlue, Bold: tui.DecorationOn})
+	th.SetStyle("label.spell-debuff", tui.Style{Bg: tui.ColorBlack, Fg: tui.ColorYellow, Bold: tui.DecorationOn})
+	th.SetStyle("label.spell-healing", tui.Style{Bg: tui.ColorBlack, Fg: tui.ColorGreen, Bold: tui.DecorationOn})
+	th.SetStyle("label.spell-utility", tui.Style{Bg: tui.ColorBlack, Fg: tui.ColorWhite, Bold: tui.DecorationOn})
 
 	left := tui.NewVBox(spellsTbl, tui.NewSpacer())
 	left.SetSizePolicy(tui.Expanding, tui.Expanding)
@@ -62,19 +69,28 @@ func main() {
 		abilityNames := make([]string, 0)
 		buffs := make(map[string]event)
 		buffNames := make([]string, 0)
-		spells := make(map[string]int)
+		charges := make(map[string]int)
+		maxCharges := make(map[string]int)
 		spellNames := make([]string, 0)
 		for e := range events {
 			switch e.status {
 			case mem:
-				spells[e.name] = e.charges
+				charges[e.name] = e.charges
+				maxCharges[e.name] = e.charges
 				spellNames = spellNames[0:0]
-				for name := range spells {
+				for name := range charges {
 					spellNames = append(spellNames, name)
 				}
-				sort.Strings(spellNames)
+				sort.Slice(spellNames, func(i, j int) bool {
+					if spellKinds[spellNames[i]] < spellKinds[spellNames[j]] {
+						return true
+					} else if spellKinds[spellNames[i]] == spellKinds[spellNames[j]] {
+						return spellNames[i] < spellNames[j]
+					}
+					return false
+				})
 			case cast:
-				spells[e.name]--
+				charges[e.name]--
 			case up, down:
 				abilities[e.name] = e
 				abilityNames = abilityNames[0:0]
@@ -95,10 +111,22 @@ func main() {
 				abilitiesTbl.RemoveRows()
 				buffsTbl.RemoveRows()
 				for _, name := range spellNames {
-					charges := spells[name]
-					if charges > 0 {
-						s := fmt.Sprintf("[%2d] %s", charges, name)
-						spellsTbl.AppendRow(tui.NewLabel(s))
+					if charges[name] > 0 {
+						s := fmt.Sprintf("%7.7s %s", shorten(name), bar(charges[name], maxCharges[name]))
+						l := tui.NewLabel(s)
+						switch spellKinds[name] {
+						case damage:
+							l.SetStyleName("spell-damage")
+						case area:
+							l.SetStyleName("spell-area")
+						case buff:
+							l.SetStyleName("spell-buff")
+						case debuff:
+							l.SetStyleName("spell-debuff")
+						case healing:
+							l.SetStyleName("spell-healing")
+						}
+						spellsTbl.AppendRow(l)
 					}
 				}
 				for _, name := range abilityNames {
@@ -106,11 +134,10 @@ func main() {
 					switch abilities[name].status {
 					case up:
 						l.SetStyleName("status-up")
-						abilitiesTbl.AppendRow(l)
 					case down:
 						l.SetStyleName("status-down")
-						abilitiesTbl.AppendRow(l)
 					}
+					abilitiesTbl.AppendRow(l)
 				}
 				for _, name := range buffNames {
 					s := name
@@ -141,4 +168,31 @@ func main() {
 	if err := ui.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func shorten(name string) string {
+	if fields := strings.Fields(name); len(fields) > 1 {
+		for i := 0; i < len(fields)-1; i++ {
+			fields[i] = fields[i][:1]
+		}
+		return strings.Join(fields, ".")
+	}
+	return name
+}
+
+func bar(charges, max int) string {
+	s := []byte("         ")
+	for i := len(s) - 1; i >= 0; i-- {
+		if charges > 0 {
+			s[i] = '#'
+			charges--
+			max--
+		} else if max > 0 {
+			s[i] = '-'
+			max--
+		} else {
+			break
+		}
+	}
+	return string(s)
 }
