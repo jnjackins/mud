@@ -25,12 +25,7 @@ type Config struct {
 		Timestamp bool               `yaml:"timestamp,omitempty"`
 		Match     map[Pattern]string `yaml:"match,omitempty"`
 	} `yaml:"log,omitempty"`
-	Dump map[string]struct {
-		Cmd   string
-		Dest  string
-		Start Pattern
-		End   Pattern
-	}
+	Dump      map[string]*DumpConfig
 	Highlight map[Pattern]*Color
 	Replace   map[Pattern]struct {
 		With  string
@@ -45,6 +40,14 @@ type Config struct {
 		Duration time.Duration
 		Match    []string
 	}
+}
+
+type DumpConfig struct {
+	Cmd   string
+	Dest  string
+	From  Pattern
+	Until Pattern
+	Match map[Pattern]string
 }
 
 func UnmarshalConfig(path string) (Config, error) {

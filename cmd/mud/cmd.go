@@ -9,56 +9,43 @@ import (
 )
 
 var commands = map[string]func(*Session, ...string){
-	"/dump":             dump,
-	"/set":              set,
-	"/vars":             vars,
-	"/aliases":          aliases,
-	"/tick":             tick,
-	"/wait":             wait,
-	"/disable-triggers": disableTriggers,
-	"/enable-triggers":  enableTriggers,
-	"/history":          history,
-	"/clear-history":    clearHistory,
+	"/dump":          dump,
+	"/set":           set,
+	"/vars":          vars,
+	"/aliases":       aliases,
+	"/tick":          tick,
+	"/wait":          wait,
+	"/triggers-off":  disableTriggers,
+	"/triggers-on":   enableTriggers,
+	"/history":       history,
+	"/clear-history": clearHistory,
 }
 
 func dump(c *Session, args ...string) {
+	c.RLock()
+	if c.dump != nil {
+		fmt.Fprintf(c.output, "dump: already dumping\n")
+		return
+	}
+	c.RUnlock()
+
 	if len(args) != 1 {
 		fmt.Fprintf(c.output, "dump: missing argument\n")
 		return
 	}
 	cfg := c.cfg.Dump[args[0]]
 	fmt.Fprintln(c.conn, cfg.Cmd)
-	fmt.Fprintf(c.output, "/dump %s\n", cfg.Cmd)
 
-	dumpc := make(chan []byte)
-
-	c.Lock()
-	c.dumpc = dumpc
-	c.Unlock()
-
-	f, err := os.Create(filepath.Join(c.path, cfg.Dest))
+	f, err := os.OpenFile(filepath.Join(c.path, cfg.Dest), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		fmt.Fprintf(c.output, "dump: %v\n", err)
 		return
 	}
 
-	go func() {
-		dumping := false
-		for line := range dumpc {
-			if cfg.Start.Match(line) {
-				dumping = true
-			}
-			if dumping {
-				fmt.Fprintln(f, string(line))
-			}
-			if cfg.End.Match(line) {
-				c.Lock()
-				c.dumpc = nil
-				c.Unlock()
-				return
-			}
-		}
-	}()
+	c.Lock()
+	c.dump = cfg
+	c.dumpFile = f
+	c.Unlock()
 }
 
 func set(c *Session, args ...string) {

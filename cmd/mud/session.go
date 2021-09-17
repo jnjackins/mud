@@ -72,7 +72,9 @@ type Session struct {
 	lastTick         time.Time
 	triggersDisabled bool
 	cancelTimers     context.CancelFunc
-	dumpc            chan []byte
+
+	dump     *mud.DumpConfig
+	dumpFile *os.File
 
 	// tab completion
 	words       *trie.Trie
@@ -116,13 +118,40 @@ func (c *Session) receive(tick chan<- time.Time) error {
 		return err
 	}
 
+	var dumping bool
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		logch <- line
 
 		c.RLock()
-		if c.dumpc != nil {
-			c.dumpc <- line
+
+		if c.dump != nil {
+			cfg := c.dump
+			f := c.dumpFile
+			c.RUnlock()
+
+			if !dumping {
+				if cfg.From.Match(line) {
+					dumping = true
+				}
+			}
+			for pattern, template := range cfg.Match {
+				if pattern.Match(line) {
+					fmt.Fprintln(f, pattern.Expand(line, template))
+				}
+			}
+			if dumping {
+				if cfg.Until.Match(line) {
+					f.Close()
+					c.Lock()
+					c.dump = nil
+					c.Unlock()
+					continue
+				}
+				continue
+			}
+			c.RLock()
 		}
 
 		if s, ok := c.replace(line); ok {
@@ -146,6 +175,7 @@ func (c *Session) receive(tick chan<- time.Time) error {
 				break
 			}
 		}
+
 		c.RUnlock()
 	}
 	return scanner.Err()
@@ -207,7 +237,13 @@ func (c *Session) triggers(line []byte) {
 
 			// expand aliases
 			for _, sub := range c.expand(s) {
-				fmt.Fprintf(c.output, "%s\n", sub)
+				c.RUnlock()
+				ok := c.command(sub)
+				c.RLock()
+				if ok {
+					continue
+				}
+				// fmt.Fprintf(c.output, "%s\n", sub)
 				fmt.Fprintf(c.conn, "%s\n", sub)
 			}
 		}
@@ -269,25 +305,8 @@ func (c *Session) send() error {
 	for scanner.Scan() {
 		s := scanner.Text()
 
-		if len(s) > 0 {
-			switch s[0] {
-			// shell command
-			case '!':
-				fmt.Fprintln(c.output, s)
-				c.sys(s[1:])
-				c.conn.Write([]byte("\n")) // get a fresh prompt
-				continue
-
-			// client command
-			case '/':
-				fields := strings.Fields(s)
-				if f, ok := commands[fields[0]]; ok {
-					fmt.Fprintln(c.output, s)
-					f(c, fields[1:]...)
-					c.conn.Write([]byte("\n")) // get a fresh prompt
-					continue
-				}
-			}
+		if c.command(s) {
+			continue
 		}
 
 		c.RLock()
@@ -307,6 +326,31 @@ func (c *Session) send() error {
 		return fmt.Errorf("scan input: %v", err)
 	}
 	return nil
+}
+
+func (c *Session) command(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+
+	switch s[0] {
+	// shell command
+	case '!':
+		// fmt.Fprintln(c.output, s)
+		c.sys(s[1:])
+		c.conn.Write([]byte("\n")) // get a fresh prompt
+		return true
+
+	// client command
+	case '/':
+		fields := strings.Fields(s)
+		if f, ok := commands[fields[0]]; ok {
+			// fmt.Fprintln(c.output, s)
+			f(c, fields[1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Session) sys(command string) {
