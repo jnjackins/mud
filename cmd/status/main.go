@@ -67,8 +67,10 @@ func main() {
 		// todo: more generic widgets using interfaces
 		abilities := make(map[string]event)
 		abilityNames := make([]string, 0)
-		buffs := make(map[string]event)
-		buffNames := make([]string, 0)
+		buffsUp := make(map[string]event)
+		buffsDown := make(map[string]event)
+		buffNamesUp := make([]string, 0)
+		buffNamesDown := make([]string, 0)
 		charges := make(map[string]int)
 		maxCharges := make(map[string]int)
 		spellNames := make([]string, 0)
@@ -98,13 +100,22 @@ func main() {
 					abilityNames = append(abilityNames, name)
 				}
 				sort.Strings(abilityNames)
-			case on, off:
-				buffs[e.name] = e
-				buffNames = buffNames[0:0]
-				for name := range buffs {
-					buffNames = append(buffNames, name)
+			case on:
+				delete(buffsDown, e.name)
+				buffsUp[e.name] = e
+				buffNamesUp = buffNamesUp[0:0]
+				for name := range buffsUp {
+					buffNamesUp = append(buffNamesUp, name)
 				}
-				sort.Strings(buffNames)
+				sort.Strings(buffNamesUp)
+			case off:
+				delete(buffsUp, e.name)
+				buffsDown[e.name] = e
+				buffNamesDown = buffNamesDown[0:0]
+				for name := range buffsDown {
+					buffNamesDown = append(buffNamesDown, name)
+				}
+				sort.Strings(buffNamesDown)
 			}
 			ui.Update(func() {
 				spellsTbl.RemoveRows()
@@ -139,27 +150,32 @@ func main() {
 					}
 					abilitiesTbl.AppendRow(l)
 				}
-				for _, name := range buffNames {
+				for _, name := range buffNamesDown {
+					if _, ok := buffsDown[name]; !ok {
+						continue
+					}
+					l := tui.NewLabel(name)
+					l.SetStyleName("status-off")
+					buffsTbl.AppendRow(l)
+				}
+				for _, name := range buffNamesUp {
+					if _, ok := buffsUp[name]; !ok {
+						continue
+					}
 					s := name
-					dur := buffs[name].remaining
+					dur := buffsUp[name].remaining
 					if dur != 0 {
 						s += fmt.Sprintf(" %v", dur.Round(time.Second))
 					}
 					l := tui.NewLabel(s)
-					switch buffs[name].status {
-					case on:
-						if dur > 10*time.Second {
-							l.SetStyleName("status-warn")
-						} else if dur > 0 && dur < 10*time.Second {
-							l.SetStyleName("status-alarm")
-						} else {
-							l.SetStyleName("status-on")
-						}
-						buffsTbl.AppendRow(l)
-					case off:
-						l.SetStyleName("status-off")
-						buffsTbl.AppendRow(l)
+					if dur > 10*time.Second {
+						l.SetStyleName("status-warn")
+					} else if dur > 0 && dur < 10*time.Second {
+						l.SetStyleName("status-alarm")
+					} else {
+						l.SetStyleName("status-on")
 					}
+					buffsTbl.AppendRow(l)
 				}
 			})
 		}
