@@ -69,12 +69,9 @@ type Session struct {
 	cfg              mud.Config
 	vars             mapvars
 	history          []string
-	lastTick         time.Time
 	triggersDisabled bool
 	cancelTimers     context.CancelFunc
-
-	dump     *mud.DumpConfig
-	dumpFile *os.File
+	oneTimeTriggers  map[mud.Pattern]string
 
 	// tab completion
 	words       *trie.Trie
@@ -87,95 +84,83 @@ func (s *Session) Close() error {
 	return nil
 }
 
-func (s *Session) Start() error {
-	tickCh := make(chan time.Time)
+func (s *Session) Start(login bool) error {
 	errors := make(chan error)
 
 	go func() {
-		errors <- s.receive(tickCh)
+		errors <- s.receive()
 	}()
 
 	go func() {
 		errors <- s.send()
 	}()
 
-	go s.notifyTicks(tickCh)
-
-	go func() {
-		if err := s.Login(); err != nil {
-			errors <- err
-		}
-	}()
+	if login {
+		go func() {
+			if err := s.Login(); err != nil {
+				errors <- err
+			}
+		}()
+	}
 
 	return <-errors
 }
 
-func (c *Session) receive(tick chan<- time.Time) error {
+func dropCR(data []byte) []byte {
+	if len(data) > 0 && data[len(data)-1] == '\r' {
+		return data[0 : len(data)-1]
+	}
+	return data
+}
+
+func (c *Session) receive() error {
+	// mud doesn't send a newline after the prompt; we rigged the telnet reader
+	// to send \x04 (EOT) instead.
+	var eol bool
+	split := func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
+		if i := bytes.IndexAny(data, "\x04\n"); i >= 0 {
+			if data[i] == '\n' {
+				eol = true
+			} else {
+				eol = false
+			}
+			return i + 1, dropCR(data[0:i]), nil
+		}
+		if atEOF {
+			return len(data), dropCR(data), nil
+		}
+		// Request more data.
+		return 0, nil, nil
+	}
+
 	scanner := bufio.NewScanner(c.conn)
+	scanner.Split(split)
 
 	logch, err := c.startLogWriter()
 	if err != nil {
 		return err
 	}
 
-	var dumping bool
-
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		logch <- line
 
 		c.RLock()
-
-		if c.dump != nil {
-			cfg := c.dump
-			f := c.dumpFile
-			c.RUnlock()
-
-			if !dumping {
-				if cfg.From.Match(line) {
-					dumping = true
-				}
-			}
-			for pattern, template := range cfg.Match {
-				if pattern.Match(line) {
-					fmt.Fprintln(f, pattern.Expand(line, template))
-				}
-			}
-			if dumping {
-				if cfg.Until.Match(line) {
-					f.Close()
-					c.Lock()
-					c.dump = nil
-					c.Unlock()
-					continue
-				}
-				continue
-			}
-			c.RLock()
-		}
-
 		if s, ok := c.replace(line); ok {
 			line = s
 		} else if s, ok := c.highlight(line); ok {
 			line = s
 		}
 		if !c.gag(line) {
-			fmt.Fprintln(c.output, string(line))
-		}
-
-		c.triggers(line)
-
-		// tick timer
-		for _, s := range c.cfg.Tick.Match {
-			if bytes.Contains(line, []byte(s)) {
-				// can't synchronously write to channel while holding lock
-				go func() {
-					tick <- time.Now()
-				}()
-				break
+			fmt.Fprint(c.output, string(line))
+			if eol {
+				fmt.Fprintln(c.output)
 			}
 		}
-
+		c.triggers(line)
 		c.RUnlock()
 	}
 	return scanner.Err()
@@ -224,30 +209,38 @@ func (c *Session) startLogWriter() (chan []byte, error) {
 }
 
 func (c *Session) triggers(line []byte) {
-	if c.triggersDisabled {
-		return
-	}
-	for pattern := range c.cfg.Triggers {
-		if pattern.Match(line) {
-			// expand regexp capture groups
-			template := c.cfg.Triggers[pattern]
-			s := pattern.Expand(line, template)
+	f := func(line []byte, m map[mud.Pattern]string, oneTime bool) {
+		if c.triggersDisabled {
+			return
+		}
+		for pattern := range m {
+			if pattern.Match(line) {
+				template := m[pattern]
 
-			info.Fprintf(c.output, "[trigger: %s]\n", s)
-
-			// expand aliases
-			for _, sub := range c.expand(s) {
-				c.RUnlock()
-				ok := c.command(sub)
-				c.RLock()
-				if ok {
-					continue
+				if oneTime {
+					delete(m, pattern)
 				}
-				// fmt.Fprintf(c.output, "%s\n", sub)
-				fmt.Fprintf(c.conn, "%s\n", sub)
+
+				// expand regexp capture groups
+				s := pattern.Expand(line, template)
+
+				info.Fprintf(c.output, "[trigger: %s]\n", s)
+
+				// expand aliases
+				for _, sub := range c.expand(s) {
+					c.RUnlock()
+					ok := c.command(sub)
+					c.RLock()
+					if !ok {
+						fmt.Fprintln(c.conn, sub)
+					}
+				}
 			}
 		}
 	}
+
+	f(line, c.cfg.Triggers, false)   // permanently configured triggers
+	f(line, c.oneTimeTriggers, true) // ad-hoc one-time triggers
 }
 
 func (c *Session) gag(line []byte) bool {
@@ -293,33 +286,40 @@ func (c *Session) isPrompt(line []byte) bool {
 }
 
 func (c *Session) send() error {
-	go func() {
-		// TODO: only if nothing else has been input for 5m
-		for range time.Tick(5 * time.Minute) {
-			c.conn.Write([]byte("\n"))
-		}
-	}()
-
-	out := io.MultiWriter(c.conn, c.output)
 	scanner := bufio.NewScanner(c.input)
 	for scanner.Scan() {
 		s := scanner.Text()
 
-		if c.command(s) {
-			continue
-		}
-
 		c.RLock()
 		expanded := c.expand(s)
 		c.RUnlock()
+
+		needPrompt := false
 		for _, sub := range expanded {
+			quiet := false
 			if len(sub) > 0 {
 				c.history = append(c.history, sub)
 				if len(c.history) > 100 {
 					c.history = c.history[1:]
 				}
+				if sub[0] == '@' {
+					quiet = true
+					sub = sub[1:]
+				}
 			}
-			fmt.Fprintln(out, sub)
+			if c.command(sub) {
+				if !quiet {
+					needPrompt = true
+				}
+			} else {
+				fmt.Fprintln(c.conn, sub)
+			}
+			if !quiet {
+				fmt.Fprintln(c.output, sub)
+			}
+		}
+		if needPrompt {
+			fmt.Fprintln(c.conn)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -336,21 +336,26 @@ func (c *Session) command(s string) bool {
 	switch s[0] {
 	// shell command
 	case '!':
-		// fmt.Fprintln(c.output, s)
 		c.sys(s[1:])
-		c.conn.Write([]byte("\n")) // get a fresh prompt
-		return true
+		break
 
 	// client command
 	case '/':
-		fields := strings.Fields(s)
-		if f, ok := commands[fields[0]]; ok {
-			// fmt.Fprintln(c.output, s)
-			f(c, fields[1:]...)
-			return true
+		fields, err := splitFields(s)
+		if err != nil {
+			fmt.Fprintln(c.output, err)
+			break
 		}
+		if f, ok := commands[fields[0]]; ok {
+			f(c, fields[1:]...)
+			break
+		}
+
+	default:
+		return false
 	}
-	return false
+
+	return true
 }
 
 func (c *Session) sys(command string) {
@@ -378,7 +383,7 @@ func (c *Session) expand(s string) []string {
 		// replace aliases
 		words := strings.Fields(sub)
 		if v, ok := c.cfg.Aliases[words[0]]; ok {
-			info.Fprintf(c.output, "[alias: %s]\n", v)
+			// info.Fprintf(c.output, "[alias: %s]\n", v)
 			sub = v
 		}
 
@@ -398,18 +403,6 @@ func (c *Session) expand(s string) []string {
 		}
 	}
 	return out
-}
-
-func (c *Session) notifyTicks(tick <-chan time.Time) {
-	for t := range tick {
-		c.Lock()
-		dur := c.cfg.Tick.Duration
-		time.AfterFunc(dur-10*time.Second, func() {
-			alert.Fprintln(c.output, "10s until next tick.")
-		})
-		c.lastTick = t
-		c.Unlock()
-	}
 }
 
 func (c *Session) Login() error {

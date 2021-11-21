@@ -8,7 +8,7 @@ import (
 	"github.com/jnjackins/mud"
 )
 
-func (c *client) serve(sess *Session) error {
+func (c *client) serve(sess *Session, login bool) error {
 	log := log.New(os.Stderr, sess.path+": ", log.LstdFlags)
 
 	// Monitor config file for changes
@@ -41,5 +41,5 @@ func (c *client) serve(sess *Session) error {
 		}
 	}()
 
-	return sess.Start()
+	return sess.Start(login)
 }

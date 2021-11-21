@@ -10,6 +10,8 @@ import (
 type Conn struct {
 	net.Conn
 
+	buf []byte
+
 	processor *tnProcessor
 	// Event/msg (out-of-band) handlers
 	handlers     []*handlerRunner
@@ -58,14 +60,22 @@ func Dial(network string, url string) (*Conn, error) {
 
 // Conn implements the io.Reader interface.
 func (t *Conn) Read(b []byte) (int, error) {
-	cb := make([]byte, 1024)
-	n, err := t.Conn.Read(cb)
-	t.processor.processBytes(cb[:n])
+	if t.buf == nil {
+		t.buf = make([]byte, 1024)
+	}
+	n, err := t.Conn.Read(t.buf)
+	t.processor.processBytes(t.buf[:n])
 	if err != nil {
 		return n, err
 	}
 
-	return t.processor.Read(b)
+	n, err = t.processor.Read(b)
+	if n < len(b) && err == nil && b[n-1] != '\x04' {
+		// waiting at a prompt?
+		b[n] = '\x04' // EOT
+		return n + 1, nil
+	}
+	return n, err
 }
 
 // SendCommand formats and sends a command (series of tnSeq) to the server.

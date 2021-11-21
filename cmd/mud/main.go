@@ -23,6 +23,7 @@ func main() {
 	log.SetFlags(0)
 
 	serve := flag.Bool("serve", true, "Run session server")
+	login := flag.Bool("login", true, "Log in automatically")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s prefix:path ...\n", os.Args[0])
@@ -49,7 +50,7 @@ func main() {
 		}
 		path := parts[1]
 
-		sess, err := c.startSession(prefix, path, *serve)
+		sess, err := c.startSession(prefix, path, *serve, *login)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -59,7 +60,7 @@ func main() {
 	c.input()
 }
 
-func (c *client) startSession(prefix, path string, serve bool) (*Session, error) {
+func (c *client) startSession(prefix, path string, serve, login bool) (*Session, error) {
 	cfg, err := mud.UnmarshalConfig(path + "/config.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
@@ -84,13 +85,14 @@ func (c *client) startSession(prefix, path string, serve bool) (*Session, error)
 		input:  input,
 		output: output,
 
-		vars: make(mapvars),
+		vars:            make(mapvars),
+		oneTimeTriggers: make(map[mud.Pattern]string),
 	}
 	sess.SetConfig(cfg)
 
 	if serve {
 		go func() {
-			if err := c.serve(sess); err != nil {
+			if err := c.serve(sess, login); err != nil {
 				log.Fatalf("serve: %v", err)
 			}
 		}()

@@ -2,18 +2,17 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jnjackins/mud"
 )
 
 var commands = map[string]func(*Session, ...string){
-	"/dump":          dump,
+	"/on":            on,
 	"/set":           set,
 	"/vars":          vars,
 	"/aliases":       aliases,
-	"/tick":          tick,
 	"/wait":          wait,
 	"/triggers-off":  disableTriggers,
 	"/triggers-on":   enableTriggers,
@@ -21,30 +20,14 @@ var commands = map[string]func(*Session, ...string){
 	"/clear-history": clearHistory,
 }
 
-func dump(c *Session, args ...string) {
-	c.RLock()
-	if c.dump != nil {
-		fmt.Fprintf(c.output, "dump: already dumping\n")
+func on(c *Session, args ...string) {
+	if len(args) != 2 {
+		fmt.Fprintf(c.output, "on: usage: /on {pattern} {action}\n")
 		return
 	}
-	c.RUnlock()
-
-	if len(args) != 1 {
-		fmt.Fprintf(c.output, "dump: missing argument\n")
-		return
-	}
-	cfg := c.cfg.Dump[args[0]]
-	fmt.Fprintln(c.conn, cfg.Cmd)
-
-	f, err := os.OpenFile(filepath.Join(c.path, cfg.Dest), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		fmt.Fprintf(c.output, "dump: %v\n", err)
-		return
-	}
-
+	on := mud.Pattern(args[0])
 	c.Lock()
-	c.dump = cfg
-	c.dumpFile = f
+	c.oneTimeTriggers[on] = args[1]
 	c.Unlock()
 }
 
@@ -57,7 +40,7 @@ func set(c *Session, args ...string) {
 		c.Lock()
 		c.vars[parts[0]] = parts[1]
 		c.Unlock()
-		fmt.Fprintf(c.output, "%s=%s\n", parts[0], parts[1])
+		// fmt.Fprintf(c.output, "%s=%s\n", parts[0], parts[1])
 	}
 }
 
@@ -75,20 +58,6 @@ func aliases(c *Session, args ...string) {
 		fmt.Fprintf(c.output, "%s=%s\n", name, val)
 	}
 	c.RUnlock()
-}
-
-func tick(c *Session, args ...string) {
-	c.RLock()
-	defer c.RUnlock()
-
-	if c.lastTick.IsZero() {
-		info.Fprintln(c.output, "no tick info")
-		return
-	}
-	var next time.Time
-	for next = c.lastTick; next.Before(time.Now()); next = next.Add(c.cfg.Tick.Duration) {
-	}
-	info.Fprintf(c.output, "next tick in %ds\n", int(next.Sub(time.Now()).Seconds()))
 }
 
 func wait(c *Session, args ...string) {
@@ -120,7 +89,7 @@ func enableTriggers(c *Session, args ...string) {
 }
 
 func history(c *Session, args ...string) {
-	fmt.Println(strings.Join(c.history, "; "))
+	fmt.Fprintf(c.output, "%s\n", strings.Join(c.history, "; "))
 }
 
 func clearHistory(c *Session, args ...string) {

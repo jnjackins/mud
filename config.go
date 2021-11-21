@@ -36,17 +36,11 @@ type Config struct {
 		Every time.Duration
 		Do    string
 	}
-	Tick struct {
-		Duration time.Duration
-		Match    []string
-	}
 }
 
 type DumpConfig struct {
 	Cmd   string
 	Dest  string
-	From  Pattern
-	Until Pattern
 	Match map[Pattern]string
 }
 

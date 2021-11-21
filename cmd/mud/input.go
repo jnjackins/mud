@@ -27,7 +27,7 @@ func (c *client) input() {
 
 		// for each semicolon-separated command, check the first word for
 		// comma-separated prefixes, and send commands to all sessions specified
-		// by the prefixes. If there are sessions specified, send to main.
+		// by the prefixes. If no sessions are specified, send to main.
 		// example command: `a,b look; b jump`
 		for n, cmd := range c.main.expand(s) {
 			cmd = strings.TrimSpace(cmd)

@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"strings"
 )
 
 type tnSeq uint8
@@ -105,6 +104,8 @@ type tnProcessor struct {
 	state tnState
 	echo  bool
 
+	buf [8]byte
+
 	currentSub  byte
 	subData     map[byte][]byte
 	cappedBytes []byte
@@ -157,7 +158,7 @@ func (p *tnProcessor) capSubData(d byte, b byte) {
 
 func (p *tnProcessor) doHandlers(bs []byte) {
 	for i, h := range p.conn.handlers {
-		m := make([]byte, len(bs))
+		m := p.buf[:len(bs)]
 		copy(m, bs)
 		err := h.send(m)
 		if err != nil {
@@ -197,7 +198,7 @@ func (p *tnProcessor) processByte(b byte) {
 			p.state = inDefault
 		}
 		if bs == GA {
-			p.dontCap('\n')
+			p.dontCap('\x04')
 		}
 		p.capture(b)
 
@@ -231,14 +232,6 @@ func (p *tnProcessor) processByte(b byte) {
 			p.processByte(b)
 		}
 	}
-}
-
-func seqToString(bytes []byte) string {
-	seqString := []string{}
-	for _, s := range bytes {
-		seqString = append(seqString, string(tnSeq(s)))
-	}
-	return strings.Join(seqString, " ")
 }
 
 func (p *tnProcessor) subDataFinished(d byte) {
