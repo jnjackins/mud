@@ -257,7 +257,11 @@ func (c *Session) replace(line []byte) ([]byte, bool) {
 	for pattern, replace := range c.cfg.Replace {
 		if pattern.Match(line) {
 			ok = true
-			line = []byte(replace.Color.Sprint(replace.With))
+			sprint := fmt.Sprint
+			if replace.Color != nil {
+				sprint = replace.Color.Sprint
+			}
+			line = []byte(sprint(pattern.Expand(line, replace.With)))
 		}
 	}
 	return line, ok
