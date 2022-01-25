@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Interpolate takes anenvironment and arguments and interpolates them into the provided template using shell script expansions
+// Interpolate takes an environment and arguments and interpolates them into the provided template using shell script expansions
 func Interpolate(env Env, args []string, template string) (string, error) {
 	if env == nil {
 		env = NewSliceEnv(nil)

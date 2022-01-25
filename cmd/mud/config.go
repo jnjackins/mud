@@ -14,6 +14,12 @@ func (c *Session) SetConfig(cfg mud.Config) {
 		}
 	}
 
+	for k, v := range cfg.Lists {
+		if _, exists := c.lists[k]; !exists {
+			c.lists[k] = v
+		}
+	}
+
 	if c.cancelTimers != nil {
 		c.cancelTimers()
 	}

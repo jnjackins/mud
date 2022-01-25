@@ -86,6 +86,7 @@ func (c *client) startSession(prefix, path string, serve, login bool) (*Session,
 		output: output,
 
 		vars:            make(mapvars),
+		lists:           make(map[string][]string),
 		oneTimeTriggers: make(map[mud.Pattern]string),
 	}
 	sess.SetConfig(cfg)

@@ -20,6 +20,7 @@ type Config struct {
 	}
 	Triggers map[Pattern]string
 	Vars     map[string]string
+	Lists    map[string][]string
 	Aliases  map[string]string
 	Log      map[string]struct {
 		Timestamp bool               `yaml:"timestamp,omitempty"`

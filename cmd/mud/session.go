@@ -68,6 +68,7 @@ type Session struct {
 	sync.RWMutex
 	cfg              mud.Config
 	vars             mapvars
+	lists            map[string][]string
 	history          []string
 	triggersDisabled bool
 	cancelTimers     context.CancelFunc
@@ -317,9 +318,9 @@ func (c *Session) send() error {
 				}
 			} else {
 				fmt.Fprintln(c.conn, sub)
-			}
-			if !quiet {
-				fmt.Fprintln(c.output, sub)
+				if !quiet {
+					fmt.Fprintln(c.output, sub)
+				}
 			}
 		}
 		if needPrompt {
